@@ -438,8 +438,158 @@ contains
 
   end subroutine HLLC_state
 
+  subroutine compute_flux_q(idir, qint, q_lo, q_hi, &
+                            F, F_lo, F_hi, &
+#ifdef RADIATION
+                            lambda, l_lo, l_hi, &
+                            rF, rF_lo, rF_hi, &
+#endif
+                            qgdnv, qg_lo, qg_hi, &
+                            ilo, ihi, jlo, jhi, kc, kflux, k3d)
+
+    ! given a primitive state, compute the flux in direction idir
+
+    use prob_params_module, only : mom_flux_has_p
+    use meth_params_module, only : NQ, NVAR, NQAUX, &
+                                   URHO, UMX, UMY, UMZ, &
+                                   UEDEN, UEINT, UFS, UFX, &
+                                   QRHO, QU, QV, QW, &
+                                   QPRES, QGAME, QREINT, QFS, QFX, &
+                                   QC, QGAMC, &
+                                   NGDNV, GDRHO, GDPRES, GDGAME, &
+                                   GDRHO, GDU, GDV, GDW, &
+#ifdef RADIATION
+                                   qrad, fspace_type, &
+                                   GDERADS, GDLAMS, &
+#endif
+                                   npassive, upass_map, qpass_map
+#ifdef RADIATION
+    use fluxlimiter_module, only : Edd_factor
+    use rad_params_module, only : ngroups
+#endif
+#ifdef HYBRID_MOMENTUM
+    use hybrid_advection_module, only : compute_hybrid_flux
+#endif
+
+    integer, intent(in) :: idir
+    integer, intent(in) :: q_lo(3), q_hi(3)
+    integer, intent(in) :: F_lo(3), F_hi(3)
+#ifdef RADIATION
+    integer, intent(in) :: l_lo(3), l_hi(3)
+    integer, intent(in) :: rF_lo(3), rF_hi(3)
+#endif
+    integer, intent(in) :: qg_lo(3), qg_hi(3)
+
+    real(rt), intent(in) :: qint(q_lo(1):q_hi(1), q_lo(2):q_hi(2), q_lo(3):q_hi(3), NQ)
+    real(rt), intent(inout) :: qgdnv(qg_lo(1):qg_hi(1), qg_lo(2):qg_hi(2), qg_lo(3):qg_hi(3), NGDNV)
+    real(rt), intent(out) :: F(F_lo(1):F_hi(1), F_lo(2):F_hi(2), F_lo(3):F_hi(3), NVAR)
+#ifdef RADIATION
+    real(rt), intent(in) :: lambda(l_lo(1):l_hi(1), l_lo(2):l_hi(2), l_lo(3):l_hi(3), 0:ngroups-1)
+    real(rt), intent(out) :: rF(rF_lo(1):rF_hi(1), rF_lo(2):rF_hi(2), rF_lo(3):rF_hi(3), 0:ngroups-1)
+#endif
+    integer, intent(in) :: ilo, ihi, jlo, jhi, kc, kflux, k3d
+
+    integer :: iu, iv1, iv2, im1, im2, im3
+    integer :: g, n, ipassive, nqp
+    real(rt) :: u_adv, rhoetot
+    real(rt) :: eddf, f1
+    integer :: i, j
+
+    real(rt) :: F_zone(NVAR), qgdnv_zone(NGDNV)
+
+    if (idir == 1) then
+       iu = QU
+       iv1 = QV
+       iv2 = QW
+       im1 = UMX
+       im2 = UMY
+       im3 = UMZ
+    else if (idir == 2) then
+       iu = QV
+       iv1 = QU
+       iv2 = QW
+       im1 = UMY
+       im2 = UMX
+       im3 = UMZ
+    else
+       iu = QW
+       iv1 = QU
+       iv2 = QV
+       im1 = UMZ
+       im2 = UMX
+       im3 = UMY
+    end if
+
+    do j = jlo, jhi
+       do i = ilo, ihi
+
+          u_adv = qint(i,j,kc,iu)
+
+          ! Compute fluxes, order as conserved state (not q)
+          F(i,j,kflux,URHO) = qint(i,j,kc,QRHO)*u_adv
+
+          F(i,j,kflux,im1) = F(i,j,kflux,URHO)*qint(i,j,kc,iu)
+          if (mom_flux_has_p(idir) % comp(im1)) then
+             F(i,j,kflux,im1) = F(i,j,kflux,im1) + qint(i,j,kc,QPRES)
+          endif
+          F(i,j,kflux,im2) = F(i,j,kflux,URHO)*qint(i,j,kc,iv1)
+          F(i,j,kflux,im3) = F(i,j,kflux,URHO)*qint(i,j,kc,iv2)
+
+          rhoetot = qint(i,j,kc,QREINT) + &
+               HALF*qint(i,j,kc,QRHO)*(qint(i,j,kc,iu)**2 + qint(i,j,kc,iv1)**2 + qint(i,j,kc,iv2)**2)
+
+          F(i,j,kflux,UEDEN) = u_adv*(rhoetot + qint(i,j,kc,QPRES))
+          F(i,j,kflux,UEINT) = u_adv*qint(i,j,kc,QREINT)
+
+#ifdef RADIATION
+          if (fspace_type == 1) then
+             do g=0,ngroups-1
+                eddf = Edd_factor(lambda(i,j,kc,g))
+                f1 = 0.5e0_rt*(1.e0_rt-eddf)
+                rF(i,j,kflux,g) = (1.e0_rt + f1) * qint(i,j,kc,QRAD+g) * u_adv
+             end do
+          else ! type 2
+             do g=0,ngroups-1
+                rF(i,j,kflux,g) = qint(i,j,kc,QRAD+g) * u_adv
+             end do
+          end if
+#endif
+
+          ! passively advected quantities
+          do ipassive = 1, npassive
+             n  = upass_map(ipassive)
+             nqp = qpass_map(ipassive)
+
+             F(i,j,kflux,n) = F(i,j,kflux,URHO)*qint(i,j,kc,nqp)
+          enddo
+
+          ! store the subset of the Godunov state
+          qgdnv(i,j,kc,GDRHO) = qint(i,j,kc,QRHO)
+          qgdnv(i,j,kc,GDU) = qint(i,j,kc,QU)
+          qgdnv(i,j,kc,GDV) = qint(i,j,kc,QV)
+          qgdnv(i,j,kc,GDW) = qint(i,j,kc,QW)
+          qgdnv(i,j,kc,GDPRES) = qint(i,j,kc,QPRES)
+          qgdnv(i,j,kc,GDGAME) = qint(i,j,kc,QGAME)
+#ifdef RADIATION
+          qgdnv(i,j,kc,GDLAMS:GDLAMS-1+ngroups) = lambda(i,j,kc,:)
+          qgdnv(i,j,kc,GDERADS:GDERADS-1+ngroups) = qint(i,j,kc,QRAD:QRAD-1+ngroups)
+#endif
+
+#ifdef HYBRID_MOMENTUM
+          ! the hybrid routine uses the Godunov indices, not the full NQ state
+          F_zone(:) = F(i,j,kflux,:)
+          qgdnv_zone(:) = qgdnv(i,j,kc,:)
+          call compute_hybrid_flux(qgdnv_zone, F_zone, idir, [i, j, k3d])
+          F(i,j,kflux,:) = F_zone(:)
+#endif
+
+       enddo
+    enddo
+
+  end subroutine compute_flux_q
 
   pure subroutine compute_flux(idir, bnd_fac, U, p, F)
+    ! given a conserved state, compute the flux in direction idir
 
     use meth_params_module, only: NVAR, URHO, UMX, UMY, UMZ, UEDEN, UEINT, UTEMP, &
          npassive, upass_map

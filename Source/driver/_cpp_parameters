@@ -59,6 +59,9 @@ do_hydro                     int          -1                  y
 # do we do the CTU unsplit method or a method-of-lines approach?
 do_ctu                       int           1                  y
 
+# do we do fourth-order accurate MOL hydro?
+fourth_order                 int           0                  y
+
 # if true, define an additional source term
 add_ext_src                  int           0
 
@@ -72,10 +75,6 @@ hybrid_hydro                 int           0                  y
 # 1: classic Colella \& Woodward ppm;
 # 2: extrema-preserving ppm
 ppm_type                     int           1                  y
-
-# to we reconstruct and trace under the parabolas of the source
-# terms to the velocity (gravity and rotation)
-ppm_trace_sources            int           1                  y
 
 # various methods of giving temperature a larger role in the
 # reconstruction---see Zingale \& Katz 2015
@@ -224,6 +223,12 @@ hse_interp_temp              int           0                  y
 # if we are doing HSE boundary conditions, how do we treat the velocity?
 # reflect? or outflow?
 hse_reflect_vels             int           0                  y
+
+
+# integration order for MOL integration
+# 1 = first order, 2 = second order TVD, 3 = 3rd order TVD, 4 = 4th order RK
+mol_order                    int           2                  y
+
 
 #-----------------------------------------------------------------------------
 # category: timestep control
@@ -595,8 +600,8 @@ mlmg_max_fmg_iter            int           0                  n
 mlmg_agglomeration           int           1                  n
 mlmg_consolidation           int           1                  n
 
-# Do M-Solve?
-mlmg_msolve                  int           0                  n
+# Do N-Solve?
+mlmg_nsolve                  int           0                  n
 
 @namespace: diffusion Diffusion static
 

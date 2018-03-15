@@ -59,7 +59,7 @@ contains
                                    QC, QGAMC, NQAUX, &
                                    NGDNV, GDU, GDV, GDW, GDPRES, &
                                    ppm_type, &
-                                   use_pslope, ppm_trace_sources, ppm_temp_fix, &
+                                   use_pslope, ppm_temp_fix, &
                                    hybrid_riemann
     use trace_ppm_module, only : tracexy_ppm, tracez_ppm
     use trace_module, only : tracexy, tracez
@@ -386,47 +386,46 @@ contains
        if (ppm_type .gt. 0) then
 
           do n = 1, NQ
-             call ppm_reconstruct(q(:,:,:,n  ), qd_lo, qd_hi, &
+             call ppm_reconstruct(q, qd_lo, qd_hi, NQ, n, &
                                   flatn, qd_lo, qd_hi, &
                                   sxm, sxp, sym, syp, szm, szp, It_lo, It_hi, &
                                   lo(1), lo(2), hi(1), hi(2), dx, k3d, kc)
 
-             call ppm_int_profile(q(:,:,:,n  ), qd_lo, qd_hi, &
-                                  q(:,:,:,QU:QW), qd_lo, qd_hi, &
-                                  qaux(:,:,:,QC), qa_lo, qa_hi, &
+             call ppm_int_profile(q, qd_lo, qd_hi, NQ, n, &
+                                  q, qd_lo, qd_hi, &
+                                  qaux, qa_lo, qa_hi, &
                                   sxm, sxp, sym, syp, szm, szp, It_lo, It_hi, &
-                                  Ip(:,:,:,:,:,n), Im(:,:,:,:,:,n), It_lo, It_hi, &
+                                  Ip, Im, It_lo, It_hi, NQ, n, &
                                   lo(1), lo(2), hi(1), hi(2), dx, dt, k3d, kc)
           end do
 
-          if (ppm_trace_sources .eq. 1) then
-             do n=1,QVAR
-                call ppm_reconstruct(srcQ(:,:,:,n), src_lo, src_hi, &
-                                     flatn, qd_lo, qd_hi, &
-                                     sxm, sxp, sym, syp, szm, szp, It_lo, It_hi, &
-                                     lo(1), lo(2), hi(1), hi(2), dx, k3d, kc)
-
-                call ppm_int_profile(srcQ(:,:,:,n), src_lo, src_hi, &
-                                     q(:,:,:,QU:QW), qd_lo, qd_hi, &
-                                     qaux(:,:,:,QC), qa_lo, qa_hi, &
-                                     sxm, sxp, sym, syp, szm, szp, It_lo, It_hi, &
-                                     Ip_src(:,:,:,:,:,n), Im_src(:,:,:,:,:,n), It_lo, It_hi, &
-                                     lo(1), lo(2), hi(1), hi(2), dx, dt, k3d, kc)
-             enddo
-          endif
-
-          ! this probably doesn't support radiation
-          if (ppm_temp_fix /= 1) then
-             call ppm_reconstruct(qaux(:,:,:,QGAMC), qa_lo, qa_hi, &
+          ! source terms
+          do n = 1, QVAR
+             call ppm_reconstruct(srcQ, src_lo, src_hi, QVAR, n, &
                                   flatn, qd_lo, qd_hi, &
                                   sxm, sxp, sym, syp, szm, szp, It_lo, It_hi, &
                                   lo(1), lo(2), hi(1), hi(2), dx, k3d, kc)
 
-             call ppm_int_profile(qaux(:,:,:,QGAMC), qa_lo, qa_hi, &
-                                  q(:,:,:,QU:QW), qd_lo, qd_hi, &
-                                  qaux(:,:,:,QC), qa_lo, qa_hi, &
+             call ppm_int_profile(srcQ, src_lo, src_hi, QVAR, n, &
+                                  q, qd_lo, qd_hi, &
+                                  qaux, qa_lo, qa_hi, &
                                   sxm, sxp, sym, syp, szm, szp, It_lo, It_hi, &
-                                  Ip_gc(:,:,:,:,:,1), Im_gc(:,:,:,:,:,1), It_lo, It_hi, &
+                                  Ip_src, Im_src, It_lo, It_hi, QVAR, n, &
+                                  lo(1), lo(2), hi(1), hi(2), dx, dt, k3d, kc)
+          enddo
+
+          ! this probably doesn't support radiation
+          if (ppm_temp_fix /= 1) then
+             call ppm_reconstruct(qaux, qa_lo, qa_hi, NQAUX, QGAMC, &
+                                  flatn, qd_lo, qd_hi, &
+                                  sxm, sxp, sym, syp, szm, szp, It_lo, It_hi, &
+                                  lo(1), lo(2), hi(1), hi(2), dx, k3d, kc)
+
+             call ppm_int_profile(qaux, qa_lo, qa_hi, NQAUX, QGAMC, &
+                                  q, qd_lo, qd_hi, &
+                                  qaux, qa_lo, qa_hi, &
+                                  sxm, sxp, sym, syp, szm, szp, It_lo, It_hi, &
+                                  Ip_gc, Im_gc, It_lo, It_hi, 1, 1, &
                                   lo(1), lo(2), hi(1), hi(2), dx, dt, k3d, kc)
           else
 

@@ -2170,10 +2170,10 @@ Gravity::add_pointmass_to_gravity (int level, MultiFab& phi, MultiFab& grav_vect
    {
        const Box& bx = mfi.growntilebox();
 
-       pm_add_to_grav(&point_mass,BL_TO_FORTRAN_3D(phi[mfi]),
+       pm_add_to_grav(ARLIM_3D(bx.loVect()),ARLIM_3D(bx.hiVect()),
+                      &point_mass,BL_TO_FORTRAN_3D(phi[mfi]),
 		      BL_TO_FORTRAN_3D(grav_vector[mfi]),
-                      ZFILL(problo),ZFILL(dx),
-		      ARLIM_3D(bx.loVect()),ARLIM_3D(bx.hiVect()));
+                      ZFILL(problo),ZFILL(dx));
    }
 }
 #endif
@@ -2916,10 +2916,6 @@ Gravity::actual_solve_with_mlmg (int crse_level, int fine_level,
     LPInfo info;
     info.setAgglomeration(mlmg_agglomeration);
     info.setConsolidation(mlmg_consolidation);
-    if (crse_level > 0) {
-        info.setMCoarsening(std::pair<bool,int>(mlmg_msolve,
-                                                parent->refRatio(crse_level-1)[0]));
-    }
 
     MLPoisson mlpoisson(gmv, bav, dmv, info);
 
@@ -2954,6 +2950,7 @@ Gravity::actual_solve_with_mlmg (int crse_level, int fine_level,
     {
         if (!Geometry::isAllPeriodic()) mlmg.setAlwaysUseBNorm(true);
 
+        mlmg.setNSolve(mlmg_nsolve);
         final_resnorm = mlmg.solve(phi, rhs, rel_eps, abs_eps);
 
         mlmg.getGradSolution(grad_phi);

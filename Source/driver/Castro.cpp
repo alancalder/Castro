@@ -126,10 +126,13 @@ std::string  Castro::probin_file = "probin";
 
 #if BL_SPACEDIM == 1
 IntVect      Castro::hydro_tile_size(1024);
+IntVect      Castro::no_tile_size(1024);
 #elif BL_SPACEDIM == 2
 IntVect      Castro::hydro_tile_size(1024,16);
+IntVect      Castro::no_tile_size(1024,1024);
 #else
 IntVect      Castro::hydro_tile_size(1024,16,16);
+IntVect      Castro::no_tile_size(1024,1024,1024);
 #endif
 
 // this will be reset upon restart
@@ -319,27 +322,19 @@ Castro::read_params ()
     if (cfl <= 0.0 || cfl > 1.0)
       amrex::Error("Invalid CFL factor; must be between zero and one.");
 
-    // The source term predictor mechanism is currently incompatible with MOL.
-
-    if (!do_ctu && source_term_predictor)
-        amrex::Error("Method of lines integration is incompatible with the source term predictor.");
-
     // The timestep retry mechanism is currently incompatible with MOL.
 
     if (!do_ctu && use_retry)
         amrex::Error("Method of lines integration is incompatible with the timestep retry mechanism.");
 
-    // for the moment, ppm_type = 0 does not support ppm_trace_sources --
-    // we need to add the momentum sources to the states (and not
-    // add it in trans_3d
-    if (ppm_type == 0 && ppm_trace_sources == 1)
+    // fourth order implies do_ctu=0
+    if (fourth_order == 1 && do_ctu == 1)
       {
 	if (ParallelDescriptor::IOProcessor())
-	    std::cout << "WARNING: ppm_trace_sources = 1 not implemented for ppm_type = 0" << std::endl;
-	ppm_trace_sources = 0;
-	pp.add("ppm_trace_sources",ppm_trace_sources);
+	    std::cout << "WARNING: fourth_order requires do_ctu = 0.  Resetting do_ctu = 0" << std::endl;
+	do_ctu = 0;
+	pp.add("do_ctu", do_ctu);
       }
-
 
     if (hybrid_riemann == 1 && BL_SPACEDIM == 1)
       {
@@ -501,7 +496,7 @@ Castro::Castro (Amr&            papa,
    // Initialize source term data to zero.
 
    MultiFab& sources_new = get_new_data(Source_Type);
-   sources_new.setVal(0.0, NUM_GROW);
+   sources_new.setVal(0.0, sources_new.nGrow());
 
 #ifdef REACTIONS
 
@@ -608,6 +603,8 @@ Castro::buildMetrics ()
 #endif
 
     if (level == 0) setGridInfo();
+
+    wall_time_start = 0.0;
 }
 
 // Initialize the MultiFabs and flux registers that live as class members.
@@ -888,6 +885,32 @@ Castro::initData ()
        }
        enforce_consistent_e(S_new);
 
+       // thus far, we assume that all initialization has worked on cell-centers
+       // (to second-order, these are cell-averages, so we're done in that case).
+       // For fourth-order, we need to convert to cell-averages now.
+       if (fourth_order) {
+         Sborder.define(grids, dmap, NUM_STATE, NUM_GROW);
+         AmrLevel::FillPatch(*this, Sborder, NUM_GROW, cur_time, State_Type, 0, NUM_STATE);
+
+         // note: this cannot be tiled
+         for (MFIter mfi(S_new); mfi.isValid(); ++mfi)
+           {
+             const Box& box     = mfi.validbox();
+             const int* lo      = box.loVect();
+             const int* hi      = box.hiVect();
+
+             const int idx = mfi.tileIndex();
+
+             ca_make_fourth_in_place(BL_TO_FORTRAN_BOX(box),
+                                     BL_TO_FORTRAN_FAB(Sborder[mfi]),
+                                     &idx);
+           }
+
+         // now copy back the averages
+         MultiFab::Copy(S_new, Sborder, 0, 0, NUM_STATE, 0);
+         Sborder.clear();
+       }
+
        // Do a FillPatch so that we can get the ghost zones filled.
 
        int ng = S_new.nGrow();
@@ -956,7 +979,7 @@ Castro::initData ()
 #endif
 
     MultiFab& source_new = get_new_data(Source_Type);
-    source_new.setVal(0., NUM_GROW);
+    source_new.setVal(0., source_new.nGrow());
 
 #ifdef ROTATION
     MultiFab& rot_new = get_new_data(Rotation_Type);
@@ -1101,9 +1124,10 @@ Castro::estTimeStep (Real dt_old)
               gPr.resize(tbox);
               radiation->estimate_gamrPr(stateMF[mfi], radMF[mfi], gPr, dx, vbox);
 
-              ca_estdt_rad(BL_TO_FORTRAN(stateMF[mfi]),
+              ca_estdt_rad(tbox.loVect(),tbox.hiVect(),
+                           BL_TO_FORTRAN(stateMF[mfi]),
                            BL_TO_FORTRAN(gPr),
-                           tbox.loVect(),tbox.hiVect(),dx,&dt);
+                           dx,&dt);
             }
           estdt_hydro = std::min(estdt_hydro, dt);
         }
@@ -1220,20 +1244,20 @@ Castro::estTimeStep (Real dt_old)
               MultiFab& S_old = get_old_data(State_Type);
               MultiFab& R_old = get_old_data(Reactions_Type);
 
-              ca_estdt_burning(BL_TO_FORTRAN_3D(S_old[mfi]),
+              ca_estdt_burning(ARLIM_3D(box.loVect()),ARLIM_3D(box.hiVect()),
+                               BL_TO_FORTRAN_3D(S_old[mfi]),
                                BL_TO_FORTRAN_3D(S_new[mfi]),
                                BL_TO_FORTRAN_3D(R_old[mfi]),
                                BL_TO_FORTRAN_3D(R_new[mfi]),
-                               ARLIM_3D(box.loVect()),ARLIM_3D(box.hiVect()),
                                ZFILL(dx),&dt_old,&dt);
               
             } else {
               
-              ca_estdt_burning(BL_TO_FORTRAN_3D(S_new[mfi]),
+              ca_estdt_burning(ARLIM_3D(box.loVect()),ARLIM_3D(box.hiVect()),
+                               BL_TO_FORTRAN_3D(S_new[mfi]),
                                BL_TO_FORTRAN_3D(S_new[mfi]),
                                BL_TO_FORTRAN_3D(R_new[mfi]),
                                BL_TO_FORTRAN_3D(R_new[mfi]),
-                               ARLIM_3D(box.loVect()),ARLIM_3D(box.hiVect()),
                                ZFILL(dx),&dt_old,&dt);
 
             }
@@ -2569,8 +2593,8 @@ Castro::normalize_species (MultiFab& S_new)
        const Box& bx = mfi.growntilebox(ng);
        const int idx = mfi.tileIndex();
 
-       ca_normalize_species(BL_TO_FORTRAN_3D(S_new[mfi]), 
-			    ARLIM_3D(bx.loVect()), ARLIM_3D(bx.hiVect()), &idx);
+       ca_normalize_species(ARLIM_3D(bx.loVect()), ARLIM_3D(bx.hiVect()), 
+                                     BL_TO_FORTRAN_3D(S_new[mfi]), &idx);
     }
 }
 
@@ -2632,10 +2656,10 @@ Castro::enforce_min_density (MultiFab& S_old, MultiFab& S_new)
 	const FArrayBox& vol      = volume[mfi];
 	const int idx = mfi.tileIndex();
 	
-	ca_enforce_minimum_density(stateold.dataPtr(), ARLIM_3D(stateold.loVect()), ARLIM_3D(stateold.hiVect()),
+	ca_enforce_minimum_density(ARLIM_3D(bx.loVect()), ARLIM_3D(bx.hiVect()),
+                                   stateold.dataPtr(), ARLIM_3D(stateold.loVect()), ARLIM_3D(stateold.hiVect()),
 				   statenew.dataPtr(), ARLIM_3D(statenew.loVect()), ARLIM_3D(statenew.hiVect()),
 				   vol.dataPtr(), ARLIM_3D(vol.loVect()), ARLIM_3D(vol.hiVect()),
-				   ARLIM_3D(bx.loVect()), ARLIM_3D(bx.hiVect()),
 				   &dens_change, &verbose, &idx);
 
     }
@@ -2786,17 +2810,17 @@ Castro::apply_problem_tags (TagBoxArray& tags,
 	    const int*  thi     = tilebx.hiVect();
 
 #ifdef DIMENSION_AGNOSTIC
-	    set_problem_tags(tptr,  ARLIM_3D(tlo), ARLIM_3D(thi),
+	    set_problem_tags(ARLIM_3D(tilebx.loVect()), ARLIM_3D(tilebx.hiVect()),
+                             tptr, ARLIM_3D(tlo), ARLIM_3D(thi),
 			     BL_TO_FORTRAN_3D(S_new[mfi]),
 			     &tagval, &clearval,
-			     ARLIM_3D(tilebx.loVect()), ARLIM_3D(tilebx.hiVect()),
 			     ZFILL(dx), ZFILL(prob_lo), &time, &level);
 #else
-	    set_problem_tags(tptr,  ARLIM(tlo), ARLIM(thi),
+	    set_problem_tags(tilebx.loVect(), tilebx.hiVect(),
+                             tptr, ARLIM(tlo), ARLIM(thi),
 			     BL_TO_FORTRAN(S_new[mfi]),
 			     &tagval, &clearval,
-			     tilebx.loVect(), tilebx.hiVect(),
-			     dx, prob_lo, &time, &level);
+		             dx, prob_lo, &time, &level);
 #endif
 
 	    //
